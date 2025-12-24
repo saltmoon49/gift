@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Grand Luxury Interactive Christmas Tree</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Lato:wght@300;400;700&display=swap" rel="stylesheet">
+    
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <!-- Babel for in-browser JSX/TS compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Import Map for React and Three.js ecosystem -->
+    <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.2.0",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+    "three": "https://esm.sh/three@0.160.0",
+    "@react-three/fiber": "https://esm.sh/@react-three/fiber@8.15.14?external=react,react-dom,three",
+    "@react-three/drei": "https://esm.sh/@react-three/drei@9.96.1?external=react,react-dom,three,@react-three/fiber",
+    "lucide-react": "https://esm.sh/lucide-react@0.300.0?external=react",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/"
+  }
+}
+</script>
+
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              luxury: {
+                green: '#002A1B', // Deepest Emerald
+                gold: '#D4AF37',   // Metallic Gold
+                accent: '#F9E29C', // Light Gold
+                red: '#8B0000',    // Christmas Red
+                dark: '#050505',
+              }
+            },
+            fontFamily: {
+              serif: ['"Playfair Display"', 'serif'],
+              sans: ['Lato', 'sans-serif'],
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      body { margin: 0; background-color: #050505; overflow: hidden; }
+      #root { width: 100vw; height: 100vh; }
+      canvas { touch-action: none; }
+      .hand-canvas { position: absolute; bottom: 20px; right: 20px; width: 200px; height: 150px; z-index: 50; border: 1px solid #D4AF37; opacity: 0.8; transform: scaleX(-1); border-radius: 8px; }
+      /* Hide scrollbars */
+      ::-webkit-scrollbar { width: 0px; background: transparent; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module" data-presets="react,typescript">
+      import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import * as THREE from 'three';
+      import { Canvas, useFrame, extend } from '@react-three/fiber';
+      import { Environment, PerspectiveCamera, Stars, shaderMaterial, Image } from '@react-three/drei';
+      import { Sparkles, Box, Maximize2, ArrowLeft, Upload } from 'lucide-react';
+
+      // ==========================================
+      // TYPES
+      // ==========================================
+      const TreeState = {
+        CHAOS: 'CHAOS',
+        FORMED: 'FORMED',
+        PHOTO_FOCUS: 'PHOTO_FOCUS'
+      };
+
+      const GestureType = {
+        NONE: 'NONE',
+        FIST: 'FIST',       // Formed
+        OPEN_PALM: 'OPEN',  // Chaos / Rotate
+        PINCH: 'PINCH'      // Focus Photo
+      };
+
+      // ==========================================
+      // MATERIALS
+      // ==========================================
+      
+      const FoliageMaterial = shaderMaterial(
+        {
+          uTime: 0,
+          uColorBase: new THREE.Color('#004225'), // Deep Emerald
+          uColorTip: new THREE.Color('#D4AF37'),  // Gold
+          uPixelRatio: 1,
+        },
+        // Vertex Shader
+        `
+          uniform float uTime;
+          uniform float uPixelRatio;
+          attribute float aSize;
+          attribute float aPhase;
+          
+          varying vec3 vPosition;
+          varying float vPhase;
+          varying float vSize;
+
+          void main() {
+            vPosition = (modelViewMatrix * vec4(position, 1.0)).xyz;
+            vPhase = aPhase;
+            vSize = aSize;
+            
+            vec4 mvPosition = vec4(vPosition, 1.0);
+            
+            // Breathing scale effect
+            float breath = 1.0 + 0.1 * sin(uTime * 2.0 + aPhase);
+            
+            // Size calculation
+            gl_PointSize = (aSize * 0.15) * uPixelRatio * breath * (100.0 / -mvPosition.z);
+            gl_Position = projectionMatrix * mvPosition;
+          }
+        `,
+        // Fragment Shader
+        `
+          uniform vec3 uColorBase;
+          uniform vec3 uColorTip;
+          uniform float uTime;
+          
+          varying vec3 vPosition;
+          varying float vPhase;
+          varying float vSize;
+
+          void main() {
+            // Circular particle shape
+            vec2 coord = gl_PointCoord - vec2(0.5);
+            float dist = length(coord);
+            if(dist > 0.5) discard;
+            
+            // Calculate pseudo-normal for 3D sphere look
+            vec3 normal = vec3(coord * 2.0, sqrt(1.0 - dot(coord * 2.0, coord * 2.0)));
+            normal = normalize(normal);
+
+            // View Direction
+            vec3 viewDir = normalize(-vPosition);
+            
+            // Metallic Luster Logic
+            float specular = pow(max(dot(normal, viewDir), 0.0), 3.0);
+            
+            // View-dependent shimmer
+            float shimmer = sin(dot(viewDir, vec3(0.0, 1.0, 0.0)) * 20.0 + vPhase);
+            
+            // Base Mix
+            float heightFactor = smoothstep(0.0, 10.0, vPosition.y + 5.0);
+            vec3 baseColor = mix(uColorBase, uColorTip, heightFactor * 0.3);
+            
+            // Breathing Golden Glow
+            float breath = 0.5 + 0.5 * sin(uTime * 3.0 + vPhase);
+            
+            float isGoldTip = step(0.6, sin(vPhase * 10.0));
+            
+            vec3 finalColor = baseColor;
+            
+            if (isGoldTip > 0.5) {
+              vec3 goldColor = uColorTip * 1.5;
+              finalColor = mix(baseColor, goldColor, 0.8) + (vec3(1.0, 0.9, 0.5) * specular * (1.0 + shimmer * 0.5) * breath);
+            } else {
+              finalColor += vec3(0.1) * specular;
+            }
+
+            float alpha = 1.0 - smoothstep(0.4, 0.5, dist);
+            gl_FragColor = vec4(finalColor, alpha);
+          }
+        `
+      );
+
+      extend({ FoliageMaterial });
+
+      // ==========================================
+      // TREE SYSTEM
+      // ==========================================
+
+      const randomSpherePoint = (radius) => {
+        const u = Math.random();
+        const v = Math.random();
+        const theta = 2 * Math.PI * u;
+        const phi = Math.acos(2 * v - 1);
+        const x = radius * Math.sin(phi) * Math.cos(theta);
+        const y = radius * Math.sin(phi) * Math.sin(theta);
+        const z = radius * Math.cos(phi);
+        return new THREE.Vector3(x, y, z);
+      };
+
+      const conePoint = (height, baseRadius, yRatio) => {
+        const y = (yRatio - 0.5) * height; 
+        const r = (1 - yRatio) * baseRadius; 
+        const theta = Math.random() * Math.PI * 2;
+        const x = r * Math.cos(theta);
+        const z = r * Math.sin(theta);
+        return new THREE.Vector3(x, y, z);
+      };
+
+      const TreeFoliage = ({ state }) => {
+        const COUNT = 2000; 
+        const meshRef = useRef(null);
+        const materialRef = useRef(null); 
+
+        const [positions, phases, sizes, dualData] = useMemo(() => {
+          const pos = new Float32Array(COUNT * 3);
+          const phs = new Float32Array(COUNT);
+          const szs = new Float32Array(COUNT);
+          const data = [];
+
+          for (let i = 0; i < COUNT; i++) {
+            const chaos = randomSpherePoint(20);
+            const r = Math.random();
+            const biasedY = 1 - Math.sqrt(r);
+            const finalY = THREE.MathUtils.clamp(biasedY + (Math.random() - 0.5) * 0.05, 0, 1);
+            const target = conePoint(16, 7, finalY);
+
+            data.push({
+              chaos,
+              target,
+              speed: 0.5 + Math.random() * 1.5 
+            });
+
+            pos[i * 3] = chaos.x;
+            pos[i * 3 + 1] = chaos.y;
+            pos[i * 3 + 2] = chaos.z;
+
+            phs[i] = Math.random() * Math.PI * 2;
+            szs[i] = (Math.random() * 0.5 + 0.5) * 8.0; 
+          }
+          return [pos, phs, szs, data];
+        }, []);
+
+        useFrame((stateThree, delta) => {
+          if (!meshRef.current || !materialRef.current) return;
+          const safeDelta = Math.min(delta, 0.1);
+          
+          materialRef.current.uTime = stateThree.clock.elapsedTime;
+          materialRef.current.uPixelRatio = Math.min(window.devicePixelRatio, 2);
+
+          const positionsAttribute = meshRef.current.geometry.attributes.position;
+          const isFormed = state === TreeState.FORMED || state === TreeState.PHOTO_FOCUS;
+          
+          for (let i = 0; i < COUNT; i++) {
+            const { chaos, target, speed } = dualData[i];
+            const ix = i * 3;
+            const dest = isFormed ? target : chaos;
+            const factor = THREE.MathUtils.clamp(safeDelta * speed * (isFormed ? 1.0 : 0.6), 0, 1);
+            
+            positionsAttribute.array[ix] = THREE.MathUtils.lerp(positionsAttribute.array[ix], dest.x, factor);
+            positionsAttribute.array[ix+1] = THREE.MathUtils.lerp(positionsAttribute.array[ix+1], dest.y, factor);
+            positionsAttribute.array[ix+2] = THREE.MathUtils.lerp(positionsAttribute.array[ix+2], dest.z, factor);
+          }
+          positionsAttribute.needsUpdate = true;
+          
+          if (isFormed) {
+              meshRef.current.rotation.y += safeDelta * 0.05;
+          } else {
+              meshRef.current.rotation.y += safeDelta * 0.01;
+          }
+        });
+
+        return (
+          <points ref={meshRef}>
+            <bufferGeometry>
+              <bufferAttribute attach="attributes-position" count={positions.length / 3} array={positions} itemSize={3} />
+              <bufferAttribute attach="attributes-aPhase" count={phases.length} array={phases} itemSize={1} />
+              <bufferAttribute attach="attributes-aSize" count={sizes.length} array={sizes} itemSize={1} />
+            </bufferGeometry>
+            {/* @ts-ignore */}
+            <foliageMaterial ref={materialRef} transparent depthWrite={false} blending={THREE.AdditiveBlending} />
+          </points>
+        );
+      };
+
+      const OrnamentsInstanced = ({ state, count, geo, mat, scaleBase, weight, spread = 6 }) => {
+        const meshRef = useRef(null);
+        const dummy = useMemo(() => new THREE.Object3D(), []);
+
+        const dualData = useMemo(() => {
+          const data = [];
+          for (let i = 0; i < count; i++) {
+            const chaos = randomSpherePoint(18);
+            const r = Math.random();
+            const biasedY = 1 - Math.sqrt(r);
+            const finalY = THREE.MathUtils.clamp(biasedY + (Math.random() - 0.5) * 0.1, 0, 1);
+            const target = conePoint(16, spread, finalY); 
+            
+            data.push({
+              chaos,
+              target,
+              scale: (Math.random() * 0.4 + 0.6) * scaleBase,
+              rotationSpeed: (Math.random() - 0.5) * 0.2, 
+              phase: Math.random() * Math.PI
+            });
+          }
+          return data;
+        }, [count, scaleBase, spread]);
+
+        useFrame((stateThree, delta) => {
+          if (!meshRef.current) return;
+          const safeDelta = Math.min(delta, 0.1);
+          const isFormed = state === TreeState.FORMED || state === TreeState.PHOTO_FOCUS;
+
+          dualData.forEach((d, i) => {
+            if (!d.currentPos) d.currentPos = d.chaos.clone();
+            const currentPos = d.currentPos;
+
+            const dest = isFormed ? d.target : d.chaos;
+            const factor = THREE.MathUtils.clamp(safeDelta * weight * (isFormed ? 0.8 : 0.4), 0, 1);
+            currentPos.lerp(dest, factor);
+
+            dummy.position.copy(currentPos);
+            
+            dummy.rotation.x += d.rotationSpeed * safeDelta;
+            dummy.rotation.y += d.rotationSpeed * safeDelta;
+            dummy.rotation.z += d.rotationSpeed * safeDelta;
+            
+            const pulse = 1 + 0.05 * Math.sin(stateThree.clock.elapsedTime * 1.0 + d.phase);
+            dummy.scale.setScalar(d.scale * pulse);
+
+            dummy.updateMatrix();
+            meshRef.current.setMatrixAt(i, dummy.matrix);
+          });
+          
+          meshRef.current.instanceMatrix.needsUpdate = true;
+          
+          if (isFormed) {
+              meshRef.current.rotation.y += safeDelta * 0.05;
+          } else {
+              meshRef.current.rotation.y += safeDelta * 0.01;
+          }
+        });
+
+        return (
+          <instancedMesh ref={meshRef} args={[geo, mat, count]} castShadow receiveShadow />
+        );
+      };
+
+      // ==========================================
+      // PHOTO GALLERY
+      // ==========================================
+
+      const PhotoItem = ({ data, state, isFocused }) => {
+        const ref = useRef(null);
+        const targetPos = useRef(new THREE.Vector3());
+        const targetScale = useRef(new THREE.Vector3(1, 1, 1));
+        const targetRot = useRef(new THREE.Quaternion());
+
+        const frameMaterial = useMemo(() => new THREE.MeshStandardMaterial({ 
+          color: '#D4AF37', 
+          metalness: 0.9, 
+          roughness: 0.1 
+        }), []);
+
+        useFrame((_, delta) => {
+          if (!ref.current) return;
+          const safeDelta = Math.min(delta, 0.1);
+
+          if (state === TreeState.PHOTO_FOCUS) {
+            if (isFocused) {
+              targetPos.current.set(0, 5, 45); 
+              targetScale.current.set(10, 10, 1);
+              targetRot.current.setFromEuler(new THREE.Euler(0, 0, 0));
+            } else {
+              targetPos.current.copy(data.chaosPosition).multiplyScalar(3); 
+              targetScale.current.set(0, 0, 0); 
+              targetRot.current.setFromEuler(new THREE.Euler(Math.random(), Math.random(), Math.random()));
+            }
+          } else if (state === TreeState.CHAOS) {
+            targetPos.current.copy(data.chaosPosition);
+            targetScale.current.set(2, 2, 1);
+            targetRot.current.setFromEuler(new THREE.Euler(0, 0, 0)); 
+          } else {
+            targetPos.current.copy(data.position);
+            targetScale.current.set(1.5, 1.5, 1);
+            targetRot.current.setFromEuler(data.rotation);
+          }
+
+          const speed = state === TreeState.PHOTO_FOCUS ? 3 : 1.5;
+          ref.current.position.lerp(targetPos.current, safeDelta * speed);
+          ref.current.scale.lerp(targetScale.current, safeDelta * speed);
+          ref.current.quaternion.slerp(targetRot.current, safeDelta * speed);
+        });
+
+        return (
+          <group ref={ref}>
+             <mesh position={[0, 0, -0.05]}>
+               <boxGeometry args={[1.1, 1.1, 0.05]} />
+               <primitive object={frameMaterial} />
+             </mesh>
+             <mesh position={[0, 0, -0.04]}>
+                <planeGeometry args={[1, 1]} />
+                <meshBasicMaterial color="#050505" />
+             </mesh>
+             {data.url && (
+               <Image 
+                 url={data.url} 
+                 transparent 
+                 scale={[1, 1]}
+               />
+             )}
+          </group>
+        );
+      };
+
+      const PhotoGallery = ({ photos, treeState, focusedId }) => {
+        const groupRef = useRef(null);
+
+        useFrame((state, delta) => {
+          if (!groupRef.current) return;
+          const safeDelta = Math.min(delta, 0.1);
+          
+          if (treeState === TreeState.FORMED) {
+            groupRef.current.rotation.y += safeDelta * 0.05;
+          } else if (treeState === TreeState.PHOTO_FOCUS) {
+            const currentRot = groupRef.current.rotation.y;
+            const targetRot = Math.round(currentRot / (Math.PI * 2)) * (Math.PI * 2);
+            groupRef.current.rotation.y = THREE.MathUtils.lerp(currentRot, targetRot, safeDelta * 5);
+          }
+        });
+
+        return (
+          <group ref={groupRef}>
+            {photos.map((photo) => (
+              <PhotoItem 
+                key={photo.id} 
+                data={photo} 
+                state={treeState} 
+                isFocused={focusedId === photo.id} 
+              />
+            ))}
+          </group>
+        );
+      };
+
+      // ==========================================
+      // SCENE
+      // ==========================================
+
+      const Snow = () => {
+        const meshRef = useRef(null);
+        const count = 1500; 
+        
+        const [positions, speeds] = useMemo(() => {
+          const pos = new Float32Array(count * 3);
+          const spd = new Float32Array(count);
+          for (let i = 0; i < count; i++) {
+            pos[i * 3] = (Math.random() - 0.5) * 60;     
+            pos[i * 3 + 1] = Math.random() * 40 - 10;    
+            pos[i * 3 + 2] = (Math.random() - 0.5) * 60; 
+            spd[i] = 1 + Math.random() * 2.5;            
+          }
+          return [pos, spd];
+        }, []);
+
+        useFrame((_, delta) => {
+          if (!meshRef.current) return;
+          const safeDelta = Math.min(delta, 0.1);
+          
+          const posAttr = meshRef.current.geometry.attributes.position;
+          
+          for (let i = 0; i < count; i++) {
+            posAttr.array[i * 3 + 1] -= speeds[i] * safeDelta;
+            if (posAttr.array[i * 3 + 1] < -15) {
+              posAttr.array[i * 3 + 1] = 25;
+              posAttr.array[i * 3] = (Math.random() - 0.5) * 60;
+              posAttr.array[i * 3 + 2] = (Math.random() - 0.5) * 60;
+            }
+          }
+          posAttr.needsUpdate = true;
+          meshRef.current.rotation.y += safeDelta * 0.05;
+        });
+
+        return (
+          <points ref={meshRef}>
+            <bufferGeometry>
+              <bufferAttribute attach="attributes-position" count={count} array={positions} itemSize={3} />
+            </bufferGeometry>
+            <pointsMaterial 
+              size={0.15} 
+              color="#FFFFFF" 
+              transparent 
+              opacity={0.6} 
+              depthWrite={false} 
+            />
+          </points>
+        );
+      };
+
+      const StarTop = ({ isFormed }) => {
+        const meshRef = useRef(null);
+        
+        const geometry = useMemo(() => {
+          const shape = new THREE.Shape();
+          const points = 5;
+          const outerRadius = 1.2;
+          const innerRadius = 0.5;
+          for(let i = 0; i < points * 2; i++) {
+              const r = (i % 2 === 0) ? outerRadius : innerRadius;
+              const a = (i / (points * 2)) * Math.PI * 2 + (Math.PI / 2); 
+              const x = Math.cos(a) * r;
+              const y = Math.sin(a) * r;
+              if(i===0) shape.moveTo(x,y);
+              else shape.lineTo(x,y);
+          }
+          shape.closePath();
+          return new THREE.ExtrudeGeometry(shape, {
+            steps: 1, depth: 0.4, bevelEnabled: true, bevelThickness: 0.1, bevelSize: 0.1, bevelSegments: 2
+          });
+        }, []);
+
+        const material = useMemo(() => new THREE.MeshStandardMaterial({
+          color: '#FFD700', emissive: '#AA8800', emissiveIntensity: 0.5, metalness: 1, roughness: 0.1
+        }), []);
+
+        useFrame((state, delta) => {
+          if(!meshRef.current) return;
+          const safeDelta = Math.min(delta, 0.1);
+          meshRef.current.rotation.y += safeDelta * 0.5;
+          const time = state.clock.elapsedTime;
+          const targetY = 10.0 + Math.sin(time) * 0.2; 
+          const currentPos = meshRef.current.position;
+          
+          if (isFormed) {
+              currentPos.y = THREE.MathUtils.lerp(currentPos.y, targetY, safeDelta * 2);
+              currentPos.x = THREE.MathUtils.lerp(currentPos.x, 0, safeDelta * 2);
+              currentPos.z = THREE.MathUtils.lerp(currentPos.z, 0, safeDelta * 2);
+          } else {
+              currentPos.y = THREE.MathUtils.lerp(currentPos.y, 15, safeDelta * 0.5);
+          }
+        });
+
+        return (
+          <mesh ref={meshRef} geometry={geometry} material={material} position={[0, 15, 0]} castShadow receiveShadow />
+        );
+      };
+
+      const CameraController = ({ rotationInput, treeState }) => {
+        const cameraGroup = useRef(null);
+        
+        useFrame((state, delta) => {
+          if (!cameraGroup.current) return;
+          const safeDelta = Math.min(delta, 0.1);
+
+          if (treeState === TreeState.PHOTO_FOCUS) {
+            cameraGroup.current.rotation.y = THREE.MathUtils.lerp(cameraGroup.current.rotation.y, 0, safeDelta * 3);
+            cameraGroup.current.rotation.x = THREE.MathUtils.lerp(cameraGroup.current.rotation.x, 0, safeDelta * 3);
+          } 
+          else if (treeState === TreeState.CHAOS) {
+            const targetAzimuth = (rotationInput.x - 0.5) * Math.PI * 2; 
+            const targetPolar = (rotationInput.y - 0.5) * Math.PI;
+            cameraGroup.current.rotation.y = THREE.MathUtils.lerp(cameraGroup.current.rotation.y, -targetAzimuth, safeDelta * 2);
+            cameraGroup.current.rotation.x = THREE.MathUtils.lerp(cameraGroup.current.rotation.x, -targetPolar * 0.5, safeDelta * 2);
+          } 
+          else {
+            cameraGroup.current.rotation.x = THREE.MathUtils.lerp(cameraGroup.current.rotation.x, 0, safeDelta * 2);
+            cameraGroup.current.rotation.y += safeDelta * 0.05; 
+          }
+        });
+
+        return (
+          <group ref={cameraGroup}>
+            <PerspectiveCamera makeDefault position={[0, 0, 60]} fov={45} />
+          </group>
+        );
+      };
+
+      const Scene = ({ treeState, photos, focusedPhotoId, cameraRotation }) => {
+        const boxGeo = useMemo(() => new THREE.BoxGeometry(1, 1, 1), []);
+        const ballGeo = useMemo(() => new THREE.SphereGeometry(0.6, 16, 16), []);
+        const caneGeo = useMemo(() => new THREE.CylinderGeometry(0.15, 0.15, 1, 16), []);
+        
+        const goldMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: '#D4AF37', metalness: 1, roughness: 0.15, envMapIntensity: 1.5 }), []);
+        const redGiftMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: '#8B0000', metalness: 0.4, roughness: 0.3 }), []);
+        const greenGiftMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: '#004225', metalness: 0.5, roughness: 0.2 }), []);
+        const whiteGlowMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: '#FFFFEE', emissive: '#FFFFDD', emissiveIntensity: 2, toneMapped: false }), []);
+        const caneMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: '#FF0000', metalness: 0.1, roughness: 0.2, emissive: '#330000', emissiveIntensity: 0.2 }), []);
+
+        return (
+          <Canvas
+            dpr={[1, 2]}
+            gl={{ antialias: false, toneMapping: THREE.ReinhardToneMapping, toneMappingExposure: 1.5 }}
+            shadows
+          >
+            <CameraController rotationInput={cameraRotation} treeState={treeState} />
+            <ambientLight intensity={0.2} color="#001a10" />
+            <spotLight position={[10, 40, 10]} angle={0.3} penumbra={1} intensity={2} color="#F9E29C" castShadow />
+            <pointLight position={[-10, 0, -10]} intensity={1} color="#D4AF37" />
+            <pointLight position={[10, -5, 10]} intensity={1} color="#8B0000" />
+            <Environment preset="city" />
+            <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
+            <Snow />
+            <group position={[0, -5, 0]}>
+              <StarTop isFormed={treeState === TreeState.FORMED || treeState === TreeState.PHOTO_FOCUS} />
+              <TreeFoliage state={treeState} />
+              <PhotoGallery photos={photos} treeState={treeState} focusedId={focusedPhotoId} />
+              <OrnamentsInstanced state={treeState} count={50} geo={boxGeo} mat={redGiftMaterial} scaleBase={0.5} weight={2.0} />
+              <OrnamentsInstanced state={treeState} count={80} geo={boxGeo} mat={greenGiftMaterial} scaleBase={0.5} weight={2.1} />
+              <OrnamentsInstanced state={treeState} count={75} geo={boxGeo} mat={goldMaterial} scaleBase={0.55} weight={2.3} />
+              <OrnamentsInstanced state={treeState} count={100} geo={ballGeo} mat={goldMaterial} scaleBase={0.5} weight={2.2} />
+              <OrnamentsInstanced state={treeState} count={200} geo={ballGeo} mat={goldMaterial} scaleBase={0.3} weight={3.5} />
+              <OrnamentsInstanced state={treeState} count={200} geo={ballGeo} mat={whiteGlowMaterial} scaleBase={0.1} weight={5.0} />
+              <OrnamentsInstanced state={treeState} count={10} geo={caneGeo} mat={caneMaterial} scaleBase={0.8} weight={2.5} spread={6.5} />
+            </group>
+          </Canvas>
+        );
+      };
+
+      // ==========================================
+      // UI
+      // ==========================================
+
+      const UI = ({ state, onToggle }) => {
+        return (
+          <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-8 z-10">
+            <div className="flex flex-col items-center mt-4 opacity-90">
+              <h1 className="font-serif text-5xl md:text-7xl text-luxury-gold tracking-wider text-center drop-shadow-lg" style={{ textShadow: '0 0 20px rgba(212, 175, 55, 0.5)' }}>
+                Merry Christmas
+              </h1>
+              <div className="h-0.5 w-32 bg-luxury-gold mt-4 mb-2 shadow-[0_0_10px_#D4AF37]"></div>
+              <p className="font-sans text-luxury-accent text-sm tracking-[0.3em] uppercase">a gift for LEIMING</p>
+            </div>
+            <div className="flex justify-center mb-12 pointer-events-auto">
+              <button
+                onClick={onToggle}
+                className={`
+                  relative group px-12 py-4 border-2 border-luxury-gold 
+                  transition-all duration-700 ease-out
+                  ${state === TreeState.FORMED || state === TreeState.PHOTO_FOCUS ? 'bg-luxury-gold/10' : 'bg-transparent'}
+                `}
+              >
+                <div className="absolute inset-0 bg-luxury-gold transform scale-x-0 group-hover:scale-x-100 transition-transform duration-500 origin-left opacity-20"></div>
+                <div className="flex items-center gap-4">
+                  {state === TreeState.CHAOS ? (
+                    <Maximize2 className="text-luxury-gold w-6 h-6 animate-pulse" />
+                  ) : state === TreeState.PHOTO_FOCUS ? (
+                    <ArrowLeft className="text-luxury-gold w-6 h-6" />
+                  ) : (
+                    <Box className="text-luxury-gold w-6 h-6" />
+                  )}
+                  <span className="font-serif text-xl text-luxury-gold font-bold tracking-widest">
+                    {state === TreeState.CHAOS ? 'ASSEMBLE' : state === TreeState.PHOTO_FOCUS ? 'RETURN' : 'RELEASE'}
+                  </span>
+                  <Sparkles className={`text-luxury-accent w-5 h-5 ${state === TreeState.FORMED ? 'animate-spin' : ''}`} />
+                </div>
+              </button>
+            </div>
+            <div className="absolute bottom-4 left-0 right-0 text-center">
+               <p className="text-luxury-gold/40 text-xs font-sans tracking-widest">DESIGNED FOR EXCELLENCE</p>
+            </div>
+          </div>
+        );
+      };
+
+      // ==========================================
+      // HAND CONTROLLER
+      // ==========================================
+
+      const HandController = ({ onGestureDetect, currentState }) => {
+        const videoRef = useRef(null);
+        const canvasRef = useRef(null);
+        const [loading, setLoading] = useState(true);
+        const [detectedGesture, setDetectedGesture] = useState("NONE");
+        const lastGestureRef = useRef("NONE");
+
+        useEffect(() => {
+          if (typeof Hands === 'undefined' || typeof Camera === 'undefined') {
+            console.warn("MediaPipe globals (Hands/Camera) not found.");
+            return;
+          }
+
+          if (!videoRef.current || !canvasRef.current) return;
+
+          const videoElement = videoRef.current;
+          let isMounted = true;
+          let handsInstance = null;
+          let cameraInstance = null;
+          
+          const onResults = (results) => {
+            if (!isMounted) return;
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+              setLoading(false);
+              const landmarks = results.multiHandLandmarks[0];
+
+              const isFingerOpen = (tipIdx, pipIdx) => landmarks[tipIdx].y < landmarks[pipIdx].y; 
+
+              const indexOpen = isFingerOpen(8, 6);
+              const middleOpen = isFingerOpen(12, 10);
+              const ringOpen = isFingerOpen(16, 14);
+              const pinkyOpen = isFingerOpen(20, 18);
+              
+              let gesture = GestureType.NONE;
+
+              if (!indexOpen && !middleOpen && !ringOpen && !pinkyOpen) {
+                gesture = GestureType.FIST;
+              }
+              else if (indexOpen && middleOpen && ringOpen && pinkyOpen) {
+                gesture = GestureType.OPEN_PALM;
+              }
+              
+              const dx = landmarks[4].x - landmarks[8].x;
+              const dy = landmarks[4].y - landmarks[8].y;
+              const distance = Math.sqrt(dx*dx + dy*dy);
+              
+              if (distance < 0.05) {
+                gesture = GestureType.PINCH;
+              }
+
+              const centerX = (landmarks[0].x + landmarks[9].x) / 2;
+              const centerY = (landmarks[0].y + landmarks[9].y) / 2;
+
+              if (lastGestureRef.current !== gesture) {
+                  lastGestureRef.current = gesture;
+                  setDetectedGesture(gesture);
+              }
+
+              onGestureDetect(gesture, { x: centerX, y: centerY });
+
+            } else {
+               if (lastGestureRef.current !== GestureType.NONE) {
+                  lastGestureRef.current = GestureType.NONE;
+                  setDetectedGesture(GestureType.NONE);
+                  onGestureDetect(GestureType.NONE);
+               }
+            }
+          };
+
+          try {
+            handsInstance = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+            handsInstance.setOptions({
+              maxNumHands: 1,
+              modelComplexity: 1,
+              minDetectionConfidence: 0.5,
+              minTrackingConfidence: 0.5
+            });
+            handsInstance.onResults(onResults);
+
+            cameraInstance = new Camera(videoElement, {
+              onFrame: async () => {
+                if (isMounted && videoElement && handsInstance) {
+                   await handsInstance.send({image: videoElement});
+                }
+              },
+              width: 320,
+              height: 240
+            });
+
+            cameraInstance.start().catch((err) => {
+                console.error("Camera start failed:", err);
+                if (isMounted) setLoading(false);
+            });
+
+          } catch (error) {
+            console.error("Failed to initialize HandController:", error);
+          }
+
+          return () => {
+            isMounted = false;
+            if (handsInstance) handsInstance.close();
+            if (videoElement && videoElement.srcObject) {
+              const stream = videoElement.srcObject;
+              stream.getTracks().forEach(track => track.stop());
+            }
+          };
+        }, [onGestureDetect]);
+
+        return (
+          <div className="absolute bottom-6 right-6 z-50 flex flex-col items-end pointer-events-none">
+            <video ref={videoRef} className="hidden" playsInline />
+            <canvas ref={canvasRef} className="hidden" />
+            <div className="bg-luxury-dark/60 backdrop-blur-md border border-luxury-gold/30 p-4 rounded-xl shadow-[0_0_20px_rgba(0,0,0,0.5)] text-right transition-all duration-300">
+              {loading ? (
+                 <div className="text-luxury-gold text-xs font-serif tracking-widest animate-pulse">
+                   INITIALIZING SENSORS...
+                 </div>
+              ) : (
+                 <>
+                   <div className="text-luxury-gold/60 text-[10px] font-serif tracking-[0.2em] mb-1">
+                     GESTURE CONTROL
+                   </div>
+                   <div className={`text-2xl font-bold tracking-widest mb-3 transition-colors duration-300 ${detectedGesture !== 'NONE' ? 'text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]' : 'text-white/30'}`}>
+                     {detectedGesture === 'NONE' ? 'WAITING...' : detectedGesture}
+                   </div>
+                   <div className="h-px w-full bg-gradient-to-r from-transparent via-luxury-gold/30 to-transparent mb-3"></div>
+                   <div className="text-[10px] text-luxury-accent/80 font-sans tracking-wider space-y-1.5">
+                     <div className={`flex justify-end gap-2 transition-opacity ${detectedGesture === GestureType.FIST ? 'opacity-100 text-luxury-gold' : 'opacity-50'}`}>
+                       <span>FORM TREE</span> <span className="font-bold">FIST</span>
+                     </div>
+                     <div className={`flex justify-end gap-2 transition-opacity ${detectedGesture === GestureType.OPEN_PALM ? 'opacity-100 text-luxury-gold' : 'opacity-50'}`}>
+                       <span>CHAOS / ROTATE</span> <span className="font-bold">OPEN</span>
+                     </div>
+                     <div className={`flex justify-end gap-2 transition-opacity ${detectedGesture === GestureType.PINCH ? 'opacity-100 text-luxury-gold' : 'opacity-50'}`}>
+                       <span>FOCUS PHOTO</span> <span className="font-bold">PINCH</span>
+                     </div>
+                   </div>
+                 </>
+              )}
+            </div>
+          </div>
+        );
+      };
+
+      // ==========================================
+      // APP COMPONENT
+      // ==========================================
+
+      const getSpiralPoint = (index, total) => {
+        const h = 10; 
+        const yStart = -1.5; 
+        const radiusBottom = 5.2;
+        const radiusTop = 2.5;
+
+        const t = index / Math.max(total - 1, 1);
+        const y = yStart + (t * h);
+        const radius = THREE.MathUtils.lerp(radiusBottom, radiusTop, t);
+        const angle = index * 2.2 + 0.5; 
+
+        const x = Math.sin(angle) * radius;
+        const z = Math.cos(angle) * radius;
+        const angleY = Math.atan2(x, z);
+        
+        const rot = new THREE.Euler(-0.1, angleY, 0);
+
+        return { pos: new THREE.Vector3(x, y, z), rot };
+      };
+
+      const App = () => {
+        const [treeState, setTreeState] = useState(TreeState.FORMED);
+        const [photos, setPhotos] = useState([]);
+        const [focusedPhotoId, setFocusedPhotoId] = useState(null);
+        const [cameraRotation, setCameraRotation] = useState({ x: 0.5, y: 0.5 });
+        const fileInputRef = useRef(null);
+
+        useEffect(() => {
+          const initialPhotos = [];
+          const TOTAL_FRAMES = 6;
+          for (let i = 0; i < TOTAL_FRAMES; i++) {
+              const { pos, rot } = getSpiralPoint(i, TOTAL_FRAMES);
+              initialPhotos.push({
+                  id: `frame-${i}`,
+                  url: '',
+                  position: pos,
+                  rotation: rot,
+                  chaosPosition: randomSpherePoint(20)
+              });
+          }
+          setPhotos(initialPhotos);
+        }, []);
+
+        const handleGesture = useCallback((gesture, handCenter) => {
+          if (gesture === GestureType.FIST) {
+            if (treeState === TreeState.CHAOS) {
+              setTreeState(TreeState.FORMED);
+              setFocusedPhotoId(null);
+            }
+          } 
+          else if (gesture === GestureType.OPEN_PALM) {
+            if (treeState !== TreeState.CHAOS) {
+              setTreeState(TreeState.CHAOS);
+              setFocusedPhotoId(null);
+            }
+            if (treeState === TreeState.CHAOS && handCenter) {
+              setCameraRotation(prev => ({
+                x: prev.x * 0.9 + handCenter.x * 0.1,
+                y: prev.y * 0.9 + handCenter.y * 0.1
+              }));
+            }
+          } 
+          else if (gesture === GestureType.PINCH) {
+              const validPhotos = photos.filter(p => p.url !== '');
+              if (treeState === TreeState.CHAOS && validPhotos.length > 0) {
+                  setTreeState(TreeState.PHOTO_FOCUS);
+                  const randomPhoto = validPhotos[Math.floor(Math.random() * validPhotos.length)];
+                  setFocusedPhotoId(randomPhoto.id);
+              }
+          }
+        }, [treeState, photos]);
+
+        const handleFileUpload = (e) => {
+          if (e.target.files && e.target.files[0]) {
+            const file = e.target.files[0];
+            const url = URL.createObjectURL(file);
+            
+            setPhotos(prev => {
+              const emptyIndex = prev.findIndex(p => p.url === '');
+              if (emptyIndex !== -1) {
+                  const newPhotos = [...prev];
+                  newPhotos[emptyIndex] = { ...newPhotos[emptyIndex], url };
+                  return newPhotos;
+              } else {
+                  const randomIndex = Math.floor(Math.random() * prev.length);
+                  const newPhotos = [...prev];
+                  newPhotos[randomIndex] = { ...newPhotos[randomIndex], url };
+                  return newPhotos;
+              }
+            });
+          }
+        };
+
+        const manualToggle = useCallback(() => {
+          setTreeState(prev => {
+              if (prev === TreeState.PHOTO_FOCUS) return TreeState.FORMED;
+              if (prev === TreeState.FORMED) return TreeState.CHAOS;
+              if (prev === TreeState.CHAOS) return TreeState.FORMED;
+              return TreeState.CHAOS;
+          });
+        }, []);
+
+        return (
+          <div className="relative w-full h-full bg-gradient-to-b from-luxury-green to-luxury-dark overflow-hidden">
+            <div className="absolute inset-0 z-0">
+              <Scene 
+                treeState={treeState} 
+                photos={photos} 
+                focusedPhotoId={focusedPhotoId} 
+                cameraRotation={cameraRotation}
+              />
+            </div>
+
+            <UI state={treeState} onToggle={manualToggle} />
+            <HandController onGestureDetect={handleGesture} currentState={treeState} />
+
+            <div className="absolute top-6 left-6 z-50">
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                className="hidden" 
+                accept="image/*" 
+                onChange={handleFileUpload} 
+              />
+              <button 
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center gap-2 bg-luxury-gold/20 hover:bg-luxury-gold/40 border border-luxury-gold text-luxury-gold px-4 py-2 rounded-full transition-all backdrop-blur-sm"
+              >
+                <Upload size={16} />
+                <span className="text-xs font-serif tracking-widest">ADD PHOTO MEMORY</span>
+              </button>
+            </div>
+
+            <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_center,transparent_0%,rgba(0,0,0,0.6)_100%)]"></div>
+          </div>
+        );
+      };
+
+      const root = createRoot(document.getElementById('root'));
+      root.render(
+        <React.StrictMode>
+          <App />
+        </React.StrictMode>
+      );
+    </script>
+  </body>
+</html>
